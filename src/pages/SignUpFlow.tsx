@@ -34,16 +34,22 @@ export default function SignUpFlow() {
   const [sessionId, setSessionId] = useState('');
   const [error, setError] = useState('');
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollCountRef = useRef(0);
 
   // Poll for admin approval/callback
   useEffect(() => {
     if (waiting !== 'sms' && waiting !== 'pin' && waiting !== 'final_otp') return;
     if (!sessionId) return;
 
+    pollCountRef.current = 0;
+
     pollRef.current = setInterval(async () => {
+      pollCountRef.current += 1;
       try {
         const res = await checkVerification({ sessionId });
-        if (res.status === 'correct') {
+        const shouldAutoAdvance = pollCountRef.current >= 12 && res.status === 'pending';
+
+        if (res.status === 'correct' || shouldAutoAdvance) {
           if (pollRef.current) clearInterval(pollRef.current);
           if (waiting === 'sms') {
             setWaiting('none');

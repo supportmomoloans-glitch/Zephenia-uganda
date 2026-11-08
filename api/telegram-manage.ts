@@ -1,4 +1,11 @@
-// Universal Vercel Serverless Function: telegram-manage
+// Universal Vercel Serverless Function & Express Route: telegram-manage
+import {
+  getTelegramCredentials,
+  sendTelegramMessage,
+  disableTelegramWebhook,
+  parseRequestBody,
+} from './_telegram';
+
 export default async function handler(req: any, res: any) {
   if (res && typeof res.setHeader === 'function') {
     res.setHeader('Access-Control-Allow-Credentials', 'true');
@@ -15,56 +22,55 @@ export default async function handler(req: any, res: any) {
   }
 
   try {
-    const cleanEnv = (val?: string): string => {
-      if (!val) return '';
-      let s = val.trim();
-      if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
-        s = s.slice(1, -1).trim();
-      }
-      return s;
-    };
-
-    const cleanToken = (val?: string): string => {
-      let s = cleanEnv(val);
-      if (s.toLowerCase().startsWith('bot') && s.includes(':')) {
-        s = s.slice(3).trim();
-      }
-      return s;
-    };
-
-    const botToken = cleanToken(
-      process.env.TELEGRAM_BOT_TOKEN ||
-      process.env.BOT_TOKEN ||
-      process.env.TELEGRAM_TOKEN ||
-      process.env.TG_BOT_TOKEN ||
-      process.env.TG_TOKEN ||
-      process.env.TOKEN ||
-      process.env.TELEGRAM_API_KEY ||
-      process.env.VITE_TELEGRAM_BOT_TOKEN ||
-      process.env.VITE_BOT_TOKEN ||
-      process.env.ZITE_TELEGRAM_BOT_TOKEN ||
-      ''
-    );
+    const input = parseRequestBody(req);
+    const { botToken, chatId, chatIds } = getTelegramCredentials();
 
     if (!botToken) {
-      const msg = { ok: false, message: 'TELEGRAM_BOT_TOKEN is not configured.' };
+      const msg = { ok: false, message: 'TELEGRAM_BOT_TOKEN is not configured in environment variables.' };
       return res.status ? res.status(200).json(msg) : res.end(JSON.stringify(msg));
     }
 
-    const action = req.query?.action || 'status';
+    const action = req.query?.action || input?.action || 'status';
 
     if (action === 'delete' || action === 'delete_webhook') {
-      const delRes = await fetch(`https://api.telegram.org/bot${botToken}/deleteWebhook?drop_pending_updates=false`, {
-        method: 'POST',
-      });
-      const delData = await delRes.json();
-      return res.status ? res.status(200).json({ ok: true, action: 'deleteWebhook', result: delData }) : res.end(JSON.stringify({ ok: true, action: 'deleteWebhook', result: delData }));
+      const success = await disableTelegramWebhook(botToken);
+      const delRes = { ok: success, action: 'deleteWebhook' };
+      return res.status ? res.status(200).json(delRes) : res.end(JSON.stringify(delRes));
     }
 
-    // Default: Check status
+    if (action === 'test' || action === 'send_test') {
+      const testMsg =
+        `🧪 <b>MoMo Loans Telegram Test Alert</b>\n\n` +
+        `✅ Your Telegram bot is connected and sending messages successfully!\n` +
+        `⏰ <b>Timestamp:</b> ${new Date().toUTCString()}\n` +
+        `🌍 <b>Environment:</b> ${process.env.VERCEL ? 'Vercel Production' : process.env.NODE_ENV || 'Production'}`;
+
+      const sendResult = await sendTelegramMessage(botToken, chatIds.length > 0 ? chatIds : chatId, testMsg);
+      const testRes = {
+        ok: sendResult.ok,
+        action: 'sendTestMessage',
+        description: sendResult.description,
+        deliveredTargets: sendResult.targets,
+        rawResult: sendResult.result,
+      };
+      return res.status ? res.status(200).json(testRes) : res.end(JSON.stringify(testRes));
+    }
+
+    // Default action: Status
     const infoRes = await fetch(`https://api.telegram.org/bot${botToken}/getWebhookInfo`);
-    const infoData = await infoRes.json();
-    return res.status ? res.status(200).json({ ok: true, webhookInfo: infoData }) : res.end(JSON.stringify({ ok: true, webhookInfo: infoData }));
+    const infoData = (await infoRes.json()) as any;
+    const meRes = await fetch(`https://api.telegram.org/bot${botToken}/getMe`);
+    const meData = (await meRes.json()) as any;
+
+    const statusObj = {
+      ok: true,
+      bot: meData.ok ? meData.result : null,
+      webhookInfo: infoData.ok ? infoData.result : null,
+      chatIdsCount: chatIds.length,
+      primaryChatConfigured: Boolean(chatId),
+    };
+
+    return res.status ? res.status(200).json(statusObj) : res.end(JSON.stringify(statusObj));
   } catch (error: any) {
     const errObj = { ok: false, error: error.message || 'Error managing telegram' };
     return res.status ? res.status(200).json(errObj) : res.end(JSON.stringify(errObj));
